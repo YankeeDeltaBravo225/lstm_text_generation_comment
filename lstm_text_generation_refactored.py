@@ -90,14 +90,6 @@ def create_train_pair(text_ids, seq_len, skip):
     return train_pairs
 
 
-# idx ⇒ char、char ⇒ idx のdictを作成
-def create_char_dict(uniq_chars):
-    dict_c2i = dict((c, i) for i, c in enumerate(uniq_chars))
-    dict_i2c = dict((i, c) for i, c in enumerate(uniq_chars))
-
-    return dict_c2i, dict_i2c
-
-
 # 各シーケンス文字列・次文字を学習用のX, Yベクトルに変換
 def vectorize_train_pairs(train_pairs, id_num):
     seq_num = len(train_pairs)
@@ -248,6 +240,7 @@ def main():
     print('----- Generating text after fitting with seed "%s"' % (char_table.ids2str(seed_char_ids)) )
     for diversity in [0.2, 0.5, 1.0, 1.2]:
         generate_text(model, seed_char_ids, char_table, diversity)
+
 
 if __name__ == '__main__':
     main()
