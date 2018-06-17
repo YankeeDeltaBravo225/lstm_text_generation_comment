@@ -21,78 +21,123 @@ import numpy as np
 import random
 import sys
 import io
+import re
 
-# ニーチェの文集をダウンロードする
-# path : ダウンロードした先のパス
-path = get_file('nietzsche.txt', origin='https://s3.amazonaws.com/text-datasets/nietzsche.txt')
 
-# text : 入力ファイル
-with io.open(path, encoding='utf-8') as f:
-    text = f.read().lower()
-print('corpus length:', len(text))
+# 各文字とidとの相互変換を行うためのクラス
+class CharTable:
+    def __init__(self, text):
+        uniq_chars = sorted(list(set(text)))
+        self.id_num = len(uniq_chars)
+        self.char2id_dict = dict((c, i) for i, c in enumerate(uniq_chars))
+        self.id2char_dict = dict((i, c) for i, c in enumerate(uniq_chars))
 
-# chars : 重複を排除した「字」のリスト
-chars = sorted(list(set(text)))
-print('total chars:', len(chars))
 
-# char_indices : 「字」を上記charsのindex番号に変換するdict
-char_indices = dict((c, i) for i, c in enumerate(chars))
+    # 文字列をIDの列に変換
+    def str2ids(self, str):
+        return [ self.char2id_dict[char] for char in str]
 
-# indices_char : 上記と逆にindex番号を「字」に変換するdict
-indices_char = dict((i, c) for i, c in enumerate(chars))
 
-# cut the text in semi-redundant sequences of maxlen characters
-# maxlen : いくつの「字」を1つの「文」とするか
-maxlen = 40
+    # ID列を文字列に変換
+    def ids2str(self, ids):
+        return ''.join([ self.id2char_dict[id] for id in ids])
 
-# step : 開始位置のスキップ数
-step = 3
+    # IDを文字に変換
+    def id2char(self, id):
+        return self.id2char_dict[id]
 
-# sentences  : 「文」のリスト
-sentences = []
 
-# next_chars : 各「文」について、その次の「文」の最初の「字」
-next_chars = []
+    # 文字をIDに変換
+    def char2id(self, char):
+        return self.char2id_dict[id]
 
-for i in range(0, len(text) - maxlen, step):
-    # 単純に長さで区切った部分文字列を一つの文という扱いで抽出
-    sentences.append(text[i: i + maxlen])
 
-    # 次の文の最初の文字を保存
-    next_chars.append(text[i + maxlen])
+# テストデータのペア(現在の文字列、その次の文字)
+class TrainPair:
+    def __init__(self, text_ids, start_pos, len):
+        last_pos = start_pos + len
+        next_pos = last_pos + 1
 
-# 上記の「文」の数をそのままLSTMのsequence数として用いる
-print('nb sequences:', len(sentences))
+        self.cur_char_ids = text_ids[start_pos : last_pos]
+        self.next_char_id = text_ids[next_pos]
 
-print('Vectorization...')
 
-# x : np.bool型 3次元配列 [文の数, 文の最大長, 字の種類]　⇒ 文中の各位置に各indexの文字が出現するか
-x = np.zeros((len(sentences), maxlen, len(chars)), dtype=np.bool)
+# ファイルをダウンロード
+def download_file(url, filename):
+    local_path = get_file(filename, origin=url)
+    return local_path
 
-# y : np.bool型 2次元配列 [文の数, 字の種類]              ⇒ 次の文の開始文字のindex
-y = np.zeros((len(sentences), len(chars)), dtype=np.bool)
 
-# vector化は各「文」について実施
-for i, sentence in enumerate(sentences):
-    for t, char in enumerate(sentence):
-        x[i, t, char_indices[char]] = 1
-    y[i, char_indices[next_chars[i]]] = 1
+# テキストを読み込んで、整形
+def load_text(path):
+    with io.open(path, encoding='utf-8') as f:
+        raw_text = f.read()
 
-# ここら辺はただのsingle LSTMのため説明は省略
+    # 改行をすべて削除し、アルファベット大文字は小文字に変換
+    text = re.sub(r'\n+', '', raw_text).lower()
+    print('text length:', len(text))
+
+    return text
+
+
+# シーケンス文字列とその次に来る文字のリストを作成
+def create_train_pair(text_ids, seq_len, skip):
+    last_start_idx = len(text_ids) - seq_len - 1
+    train_pairs = [TrainPair(text_ids, i, seq_len) for i in range(0, last_start_idx, skip)]
+
+    print('number of sequences:', len(train_pairs))
+
+    return train_pairs
+
+
+# idx ⇒ char、char ⇒ idx のdictを作成
+def create_char_dict(uniq_chars):
+    dict_c2i = dict((c, i) for i, c in enumerate(uniq_chars))
+    dict_i2c = dict((i, c) for i, c in enumerate(uniq_chars))
+
+    return dict_c2i, dict_i2c
+
+
+# 各シーケンス文字列・次文字を学習用のX, Yベクトルに変換
+def vectorize_train_pairs(train_pairs, id_num):
+    seq_num = len(train_pairs)
+    seq_len = len(train_pairs[0].cur_char_ids)
+
+    # 各シーケンス中に現れる各文字の出現確率を設定する配列
+    x = np.zeros((seq_num, seq_len, id_num), dtype=np.bool)
+
+    # 各シーケンスの次の文字の出現確率を設定する配列
+    y = np.zeros((seq_num, id_num), dtype=np.bool)
+
+    # vector化は各「文」について実施
+    for seq_index, train_pair in enumerate(train_pairs):
+        # 現在のシーケンス中の各文字の出現確率を1(100%)に設定
+        for char_pos, cur_char_id in enumerate(train_pair.cur_char_ids):
+            x[seq_index, char_pos, cur_char_id] = 1
+
+        # 現在のシーケンスの次に来る文字種の出現確率を1(100%)に設定
+        y[seq_index, train_pair.next_char_id] = 1
+
+    return x, y
+
 
 # build the model: a single LSTM
-print('Build model...')
-model = Sequential()
-model.add(LSTM(128, input_shape=(maxlen, len(chars))))
-model.add(Dense(len(chars)))
-model.add(Activation('softmax'))
+def create_model(seq_size, num_class):
+    lstm = LSTM(
+        units=128,
+        input_shape=(seq_size, num_class)
+    )
 
-# 勾配法にRMSpropを用いる
-# 以下参照
-# https://qiita.com/tokkuman/items/1944c00415d129ca0ee9
+    model = Sequential()
+    model.add(lstm)
+    model.add(Dense(num_class))
+    model.add(Activation('softmax'))
 
-optimizer = RMSprop(lr=0.01)
-model.compile(loss='categorical_crossentropy', optimizer=optimizer)
+    model.compile(
+        loss='categorical_crossentropy',
+        optimizer=RMSprop(lr=0.01)
+    )
+    return model
 
 
 # 各「字」の出現確率の配列(ndarray型)から、出力する文字を選ぶ
@@ -103,7 +148,7 @@ model.compile(loss='categorical_crossentropy', optimizer=optimizer)
 #
 #  preds       : モデルからの出力結果、float32型の多項分布が入ったndarray
 #  temperature : 多様度、この値が高いほど preds 中の出現率が低いものが選ばれやすくなる
-def sample(preds, temperature=1.0):
+def draw_lottery(preds, temperature=1.0):
     # helper function to sample an index from a probability array
 
     # 64bit float型に変換
@@ -130,66 +175,79 @@ def sample(preds, temperature=1.0):
     return np.argmax(probas)
 
 
-# 各epoch終了時に呼ばれるcallback
-def on_epoch_end(epoch, logs):
-    # Function invoked at end of each epoch. Prints generated text.
-    print()
-    print('----- Generating text after Epoch: %d' % epoch)
+# 現在の「文」の中のどの位置に何の「字」があるかのテーブルを
+# フィッティング時に入力したxベクトルと同じフォーマットで生成
+# 最初の次元は「文」のIDなので0固定
+def create_pred_x(char_ids, char_id_num):
+    seq_size = len(char_ids)
+    x_pred = np.zeros((1, seq_size, char_id_num))
+    for char_pos, char_id in enumerate(char_ids):
+        x_pred[0, char_pos, char_id] = 1
 
-    # モデルは40文字の「文」からその次の「字」を予測するものであるため、
-    # その元となる40文字の「文」を入力テキストからランダムに選ぶ
-    start_index = random.randint(0, len(text) - maxlen - 1)
+    return x_pred
 
-    # diversityとは多様性を意味する言葉
-    # この値が低いとモデルの予測で出現率が高いとされた「字」がそのまま選ばれ、
-    # 高ければそうでない「字」が選ばれる確率が高まる
+
+# Fitting終了後に呼ばれる文字列生成関数
+# diversityとは多様性を意味する言葉
+# この値が低いとモデルの予測で出現率が高いとされた「字」がそのまま選ばれ、
+# 高ければそうでない「字」が選ばれる確率が高まる
+def generate_text(model, seed_seq, char_table, diversity):
+    print('----- Generating with diversity:%f' % (diversity))
+    generated = ''
+    seq_char_ids = seed_seq
+
+    # 上記のランダムで選ばれた「文」に続く400個の「字」をモデルから予測し出力
+    for i in range(400):
+        x_pred = create_pred_x(seq_char_ids, char_table.id_num)
+
+        # 予測により、各文字が現れる確率が多項分布で得られる
+        y_pred = model.predict(x_pred, verbose=0)[0]
+
+        # 確率にしたがって抽選を行う
+        next_char_id = draw_lottery(y_pred, diversity)
+
+        # 予測して得られた「字」を生成し、「文」に追加
+        generated += char_table.id2char(next_char_id)
+
+        # モデル入力するシーケンス文から最初の文字を削り、末尾に予測結果を追加
+        seq_char_ids.pop(0)
+        seq_char_ids.append(next_char_id)
+
+    print(generated)
+
+
+def main():
+    # 設定
+    seq_str_len = 40 #シーケンス1つのの文字数
+
+    # ニーチェの文集をダウンロード or コマンドラインで入力テキストファイルを指定
+    print('Loading the text file...')
+    # text_path = download_file('https://s3.amazonaws.com/text-datasets/nietzsche.txt', 'nietzsche.txt')
+    text_path = sys.argv[1]
+    text      = load_text(text_path)
+
+    print('Vectorization of text...')
+    char_table = CharTable(text)
+    text_ids   = char_table.str2ids(text)
+    train_pairs = create_train_pair(text_ids, seq_str_len, 3)
+    seed_char_ids = random.choice(train_pairs).cur_char_ids
+
+    x_train, y_train = vectorize_train_pairs(train_pairs, char_table.id_num)
+
+    print('Build model...')
+    model = create_model(seq_str_len, char_table.id_num)
+
+    print('Fit model...')
+    model.fit(
+        x_train,
+        y_train,
+        batch_size=128,
+        epochs=60
+        )
+
+    print('----- Generating text after fitting with seed "%s"' % (char_table.ids2str(seed_char_ids)) )
     for diversity in [0.2, 0.5, 1.0, 1.2]:
-        print('----- diversity:', diversity)
+        generate_text(model, seed_char_ids, char_table, diversity)
 
-        generated = ''
-
-        # 元にする「文」を選択
-        sentence = text[start_index: start_index + maxlen]
-        generated += sentence
-        print('----- Generating with seed: "' + sentence + '"')
-        sys.stdout.write(generated)
-
-        # 上記のランダムで選ばれた「文」に続く400個の「字」をモデルから予測し出力する
-        for i in range(400):
-
-            # 現在の「文」の中のどの位置に何の「字」があるかのテーブルを
-            # フィッティング時に入力したxベクトルと同じフォーマットで生成
-            # 最初の次元は「文」のIDなので0固定
-            x_pred = np.zeros((1, maxlen, len(chars)))
-            for t, char in enumerate(sentence):
-                x_pred[0, t, char_indices[char]] = 1.
-
-            # 現在の「文」に続く「字」を予測する
-            preds = model.predict(x_pred, verbose=0)[0]
-            next_index = sample(preds, diversity)
-            next_char = indices_char[next_index]
-
-            # 予測して得られた「字」を生成し、「文」に追加
-            generated += next_char
-
-            # モデル入力する「文」から最初の文字を削り、予測結果の「字」を追加
-            # 例：sentence 「これはドイツ製」
-            #     next_char 「の」
-            #     ↓
-            #     sentence 「れはドイツ製の」
-            sentence = sentence[1:] + next_char
-
-            sys.stdout.write(next_char)
-            sys.stdout.flush()
-        print()
-
-# 各epoch終了時のcallbackとして、上記のon_epoch_endを呼ぶ
-# 参照
-# https://keras.io/ja/callbacks/#lambdacallback
-print_callback = LambdaCallback(on_epoch_end=on_epoch_end)
-
-# フィッティング実施、各epoch完了時に先述の on_epoch_end が呼ばれる
-model.fit(x, y,
-          batch_size=128,
-          epochs=60,
-          callbacks=[print_callback])
+if __name__ == '__main__':
+    main()
