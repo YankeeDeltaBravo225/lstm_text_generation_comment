@@ -74,7 +74,7 @@ def load_text(path):
         raw_text = f.read()
 
     # 改行をすべて削除し、アルファベット大文字は小文字に変換
-    text = re.sub(r'\n+', '', raw_text).lower()
+    text = re.sub(r'\n+', ' ', raw_text).lower()
     print('text length:', len(text))
 
     return text
@@ -144,33 +144,34 @@ def draw_lottery(preds, temperature=1.0):
     # helper function to sample an index from a probability array
 
     # 64bit float型に変換
-    preds = np.asarray(preds).astype('float64')
+    preds_f64 = np.asarray(preds).astype('float64')
 
     # 確率の低く出た「字」が抽選で選ばれやすくなるようにゲタをはかせるため、
     # 自然対数を取った上、引数の値で割る
     # 参照
     # https://docs.scipy.org/doc/numpy-1.14.0/reference/generated/numpy.log.html
-    preds = np.log(preds) / temperature
+    preds_log = np.log(preds_f64) / temperature
 
     # 上記で確率の自然対数を取ったため、その逆変換である自然指数関数をとる
+    # この時点では総和は1にならないため注意
     # 参照
     # https://docs.scipy.org/doc/numpy-1.14.0/reference/generated/numpy.exp.html
-    exp_preds = np.exp(preds)
+    preds_unnorm = np.exp(preds_log)
 
     # 多項分布の形に合わせるため、総和が1となるように全値を総和で割る
-    preds = exp_preds / np.sum(exp_preds)
+    preds_norm = preds_unnorm / np.sum(preds_unnorm)
 
     # 多項分布に基づいた抽選を行う
     # 参照
     # https://docs.scipy.org/doc/numpy/reference/generated/numpy.random.multinomial.html
-    probas = np.random.multinomial(1, preds, 1)
+    probas = np.random.multinomial(1, preds_norm, 1)
     return np.argmax(probas)
 
 
 # 現在の「文」の中のどの位置に何の「字」があるかのテーブルを
 # フィッティング時に入力したxベクトルと同じフォーマットで生成
 # 最初の次元は「文」のIDなので0固定
-def create_pred_x(char_ids, char_id_num):
+def create_x_for_pred(char_ids, char_id_num):
     seq_size = len(char_ids)
     x_pred = np.zeros((1, seq_size, char_id_num))
     for char_pos, char_id in enumerate(char_ids):
@@ -181,8 +182,8 @@ def create_pred_x(char_ids, char_id_num):
 
 # Fitting終了後に呼ばれる文字列生成関数
 # diversityとは多様性を意味する言葉
-# この値が低いとモデルの予測で出現率が高いとされた「字」がそのまま選ばれ、
-# 高ければそうでない「字」が選ばれる確率が高まる
+# この値が低いとモデルの予測出現率とおりの「字」がそのまま選ばれやすく、
+# 逆に高ければ、そうでない「字」が選ばれるやすくなる
 def generate_text(model, seed_seq, char_table, diversity):
     print('----- Generating with diversity:%f' % (diversity))
     generated = ''
@@ -190,7 +191,7 @@ def generate_text(model, seed_seq, char_table, diversity):
 
     # 上記のランダムで選ばれた「文」に続く400個の「字」をモデルから予測し出力
     for i in range(400):
-        x_pred = create_pred_x(seq_char_ids, char_table.id_num)
+        x_pred = create_x_for_pred(seq_char_ids, char_table.id_num)
 
         # 予測により、各文字が現れる確率が多項分布で得られる
         y_pred = model.predict(x_pred, verbose=0)[0]
@@ -198,10 +199,10 @@ def generate_text(model, seed_seq, char_table, diversity):
         # 確率にしたがって抽選を行う
         next_char_id = draw_lottery(y_pred, diversity)
 
-        # 予測して得られた「字」を生成し、「文」に追加
+        # 予測して得られた文字を生成文に追加
         generated += char_table.id2char(next_char_id)
 
-        # モデル入力するシーケンス文から最初の文字を削り、末尾に予測結果を追加
+        # シーケンス文から最初の文字を削り、末尾に予測結果を追加
         seq_char_ids.pop(0)
         seq_char_ids.append(next_char_id)
 
